@@ -49,6 +49,15 @@ jobs:
           FORCE: ${{ github.event.inputs.force }}
         run: python bot.py
 
+      - name: Діагностика (якщо був збій)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 3
+          
       - name: Зберегти стан
         run: |
           git config user.name "dtek-bot"
