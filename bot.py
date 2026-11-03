@@ -37,42 +37,114 @@ STATUS_MAP = {
 
 
 # ---------------------------------------------------------------- дані з сайту
+def extract_fact_from_html(html: str):
+    """Запасний спосіб: шукає 'DisconSchedule.fact = {...}' прямо в HTML."""
+    import re
+    m = re.search(r"DisconSchedule\.fact\s*=\s*", html)
+    if not m:
+        return None
+    i = html.find("{", m.end())
+    if i < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for j in range(i, len(html)):
+        c = html[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(html[i:j + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+JS_GET_FACT = """() => {
+  try {
+    const f = window.DisconSchedule && window.DisconSchedule.fact;
+    if (f && f.data) return JSON.parse(JSON.stringify(f));
+  } catch (e) {}
+  return null;
+}"""
+
+
+def save_debug(page, attempt: int):
+    """Зберігає, що бачив браузер, щоб зрозуміти причину збою."""
+    os.makedirs("debug", exist_ok=True)
+    try:
+        page.screenshot(path=f"debug/attempt{attempt}.png", full_page=True)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        html = page.content()
+        with open(f"debug/attempt{attempt}.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"  URL: {page.url}", file=sys.stderr)
+        print(f"  Заголовок: {page.title()!r}", file=sys.stderr)
+        print(f"  Розмір HTML: {len(html)}; DisconSchedule у коді: "
+              f"{'так' if 'DisconSchedule' in html else 'ні'}", file=sys.stderr)
+        text = page.inner_text("body")[:400].replace("\n", " ")
+        print(f"  Текст сторінки: {text}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print(f"  (не вдалося зберегти діагностику: {e})", file=sys.stderr)
+
+
 def fetch_fact():
     """Відкриває сторінку ДТЕК у справжньому браузері і забирає DisconSchedule.fact."""
     from playwright.sync_api import sync_playwright
 
     last_err = None
-    for attempt in range(3):
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
-                ctx = browser.new_context(
-                    locale="uk-UA",
-                    timezone_id="Europe/Kyiv",
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-                    ),
-                )
-                page = ctx.new_page()
-                page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_function(
-                    "() => window.DisconSchedule && window.DisconSchedule.fact"
-                    " && window.DisconSchedule.fact.data",
-                    timeout=45000,
-                )
-                fact = page.evaluate(
-                    "() => JSON.parse(JSON.stringify(window.DisconSchedule.fact))"
-                )
-                browser.close()
-                return fact
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            print(f"Спроба {attempt + 1} не вдалась: {e}", file=sys.stderr)
-            time.sleep(5 + attempt * 5)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+        ctx = browser.new_context(
+            locale="uk-UA",
+            timezone_id="Europe/Kyiv",
+            viewport={"width": 1366, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+            ),
+            extra_http_headers={"Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8"},
+        )
+        ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
+        page = ctx.new_page()
+        for attempt in range(1, 4):
+            try:
+                page.goto(URL, wait_until="load", timeout=60000)
+                # до 40 с чекаємо: сторінка перевірки може сама перенаправити на сайт
+                for _ in range(20):
+                    fact = page.evaluate(JS_GET_FACT)
+                    if fact:
+                        browser.close()
+                        return fact
+                    fact = extract_fact_from_html(page.content())
+                    if fact and fact.get("data"):
+                        browser.close()
+                        return fact
+                    page.wait_for_timeout(2000)
+                raise RuntimeError("на сторінці немає DisconSchedule.fact")
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                print(f"Спроба {attempt} не вдалась: {e}", file=sys.stderr)
+                save_debug(page, attempt)
+                page.wait_for_timeout(5000 * attempt)
+        browser.close()
     raise RuntimeError(f"Не вдалося отримати графік: {last_err}")
 
 
