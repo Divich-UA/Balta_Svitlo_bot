@@ -2,7 +2,7 @@ name: DTEK графік 2.1
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # кожні 10 хв (GitHub може запізнюватись на кілька хвилин)
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       force:
