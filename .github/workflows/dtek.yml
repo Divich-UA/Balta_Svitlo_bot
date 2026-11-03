@@ -1,1 +1,57 @@
+name: DTEK графік 2.1
 
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # кожні 10 хв (GitHub може запізнюватись на кілька хвилин)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Надіслати графік зараз, навіть без змін"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dtek-bot
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Встановити залежності
+        run: pip install -r requirements.txt
+
+      - name: Кеш браузера
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Встановити Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Перевірити графік
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GROUP: "2.1"
+          FORCE: ${{ github.event.inputs.force }}
+        run: python bot.py
+
+      - name: Зберегти стан
+        run: |
+          git config user.name "dtek-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "графік оновлено" && git push)
