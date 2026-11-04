@@ -9,7 +9,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 URL = "https://www.dtek-oem.com.ua/ua/shutdowns"
@@ -20,6 +20,8 @@ STATE_FILE = "state.json"
 TG_TOKEN = os.environ.get("TG_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 FORCE = os.environ.get("FORCE", "").lower() in ("1", "true", "yes")
+# з якої години (за Києвом) слати графік нового дня; 0 = одразу після півночі
+NEW_DAY_HOUR = int(os.environ.get("NEW_DAY_HOUR", "0") or 0)
 FAIL_ALERT_MIN = 60  # через скільки хвилин збоїв попередити в Telegram
 
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "нд"]
@@ -222,9 +224,18 @@ def format_day(date_iso: str, slots: list, mark: str) -> str:
     return "\n".join(lines)
 
 
-def build_message(days: dict, changed: dict, update_str: str) -> str:
-    any_changed_existing = any(v == "changed" for v in changed.values())
-    head = "⚠️ <b>Графік змінився</b>" if any_changed_existing else "🆕 <b>Новий графік</b>"
+def build_message(days: dict, changed: dict, update_str: str, new_day: bool = False) -> str:
+    tomorrow = (datetime.now(TZ).date() + timedelta(days=1)).isoformat()
+    if any(v == "changed" for v in changed.values()):
+        head = "⚠️ <b>Графік змінився</b>"
+    elif changed.get(tomorrow) == "new":
+        head = "🆕 <b>З'явився графік на завтра</b>"
+    elif changed:
+        head = "🆕 <b>Новий графік</b>"
+    elif new_day:
+        head = "☀️ <b>Графік на сьогодні</b>"
+    else:
+        head = "📋 <b>Актуальний графік</b>"
     parts = [f"💡 Група {GROUP} · ДТЕК Одеські електромережі\n{head}"]
     for date_iso, slots in days.items():
         mark = {"changed": "  ✏️ змінено", "new": "  🆕"}.get(changed.get(date_iso), "")
@@ -301,14 +312,28 @@ def run(fact: dict, state: dict):
     recovered = bool(state.pop("fail_since", None))
     state.pop("fail_alerted", None)
 
-    if changed or FORCE:
-        msg = build_message(days, changed, str(fact.get("update") or ""))
+    now = datetime.now(TZ)
+    today = now.date().isoformat()
+    # новий день: є графік на сьогодні, сьогодні ще не слали і вже настала потрібна година
+    new_day = (
+        state.get("last_date") != today
+        and today in days
+        and now.hour >= NEW_DAY_HOUR
+    )
+
+    sent = False
+    if changed or new_day or FORCE:
+        msg = build_message(days, changed, str(fact.get("update") or ""), new_day)
         send_telegram(msg)
+        sent = True
     else:
         print("Без змін")
 
+    old_last = state.get("last_date")
+    if sent and today in days:
+        state["last_date"] = today
     state["days"] = {d: signature(sl) for d, sl in days.items()}
-    if changed or FORCE or recovered or old != state["days"]:
+    if sent or recovered or old != state["days"] or old_last != state.get("last_date"):
         save_state(state)
 
 
