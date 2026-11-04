@@ -225,20 +225,12 @@ def format_day(date_iso: str, slots: list, mark: str) -> str:
 
 
 def build_message(days: dict, changed: dict, update_str: str, new_day: bool = False) -> str:
-    tomorrow = (datetime.now(TZ).date() + timedelta(days=1)).isoformat()
+    header = f"💡 Група {GROUP} · ДТЕК Одеські електромережі"
     if any(v == "changed" for v in changed.values()):
-        head = "⚠️ <b>Графік змінився</b>"
-    elif changed.get(tomorrow) == "new":
-        head = "🆕 <b>З'явився графік на завтра</b>"
-    elif changed:
-        head = "🆕 <b>Новий графік</b>"
-    elif new_day:
-        head = "☀️ <b>Графік на сьогодні</b>"
-    else:
-        head = "📋 <b>Актуальний графік</b>"
-    parts = [f"💡 Група {GROUP} · ДТЕК Одеські електромережі\n{head}"]
+        header += "\n⚠️ <b>Зміна графіку</b>"
+    parts = [header]
     for date_iso, slots in days.items():
-        mark = {"changed": "  ✏️ змінено", "new": "  🆕"}.get(changed.get(date_iso), "")
+        mark = "  ✏️ змінено" if changed.get(date_iso) == "changed" else ""
         parts.append(format_day(date_iso, slots, mark))
     if update_str:
         parts.append(f"🕒 Оновлено ДТЕК: {update_str}")
