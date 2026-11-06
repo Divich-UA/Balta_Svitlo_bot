@@ -2,11 +2,11 @@ name: DTEK графік 2.1
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "7 * * * *"   # страховка: якщо бот зупинився, GitHub перезапустить
   workflow_dispatch:
     inputs:
       force:
-        description: "Надіслати графік зараз, навіть без змін"
+        description: "Одразу надіслати графік у всі чати"
         type: boolean
         default: false
 
@@ -20,7 +20,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -41,12 +41,19 @@ jobs:
       - name: Встановити Chromium
         run: python -m playwright install --with-deps chromium
 
-      - name: Перевірити графік
+      - name: Налаштувати git
+        run: |
+          git config user.name "dtek-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Бот працює
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           GROUP: "2.1"
           FORCE: ${{ github.event.inputs.force }}
+          CHECK_EVERY_SEC: "180"
+          RUN_MINUTES: "340"
         run: python bot.py
 
       - name: Діагностика (якщо був збій)
@@ -57,10 +64,3 @@ jobs:
           path: debug/
           if-no-files-found: ignore
           retention-days: 3
-          
-      - name: Зберегти стан
-        run: |
-          git config user.name "dtek-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json 2>/dev/null || true
-          git diff --cached --quiet || (git commit -m "графік оновлено" && git push)
