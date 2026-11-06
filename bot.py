@@ -452,8 +452,12 @@ def check_schedules(fact: dict, state: dict, force: bool = False) -> bool:
             msg = build_message(group, days, changed, update_str)
             for chat in list(chats):
                 res = send(chat, msg)
-                if res.get("error_code") == 403 and chat in state["subs"]:
-                    del state["subs"][chat]  # людина заблокувала бота
+                new_id = (res.get("parameters") or {}).get("migrate_to_chat_id")
+                if new_id and chat in state["subs"]:   # група стала супергрупою
+                    state["subs"][str(new_id)] = state["subs"].pop(chat)
+                    send(str(new_id), msg)
+                elif res.get("error_code") == 403 and chat in state["subs"]:
+                    del state["subs"][chat]  # бота заблокували або видалили
             if today in days:
                 gs["last_date"] = today
             dirty = True
@@ -472,53 +476,119 @@ HELP = (
     "/stop — відписатися\n\n"
     "Графік приходить, коли настає новий день, коли з'являється графік на завтра "
     "і коли ДТЕК його змінює. З 00:00 до 07:00 — без звуку.\n"
+    "Мене можна додати і в груповий чат — там чергу вибирають адміни.\n"
     "Свою чергу можна дізнатися на сайті ДТЕК за адресою: " + URL
 )
 
+BOT_USERNAME = ""   # заповнюється при старті (getMe)
+OUR_COMMANDS = ("/start", "/change", "/now", "/stop", "/help")
+
+
+def is_admin(chat_id, user_id) -> bool:
+    res = tg("getChatMember", chat_id=chat_id, user_id=user_id)
+    return (res.get("result") or {}).get("status") in ("creator", "administrator")
+
+
+def chat_word(chat: dict) -> str:
+    return "цього чату" if chat.get("type") != "private" else "ваша"
+
 
 def handle_update(u: dict, state: dict, fact) -> bool:
-    """Обробляє повідомлення/кнопку від користувача. True — змінились підписки."""
+    """Обробляє повідомлення/кнопку/додавання в чат. True — змінились підписки."""
+    kb = groups_keyboard(state.get("known_groups"))
+
+    # --- бота додали в групу або видалили з неї
+    if "my_chat_member" in u:
+        mc = u["my_chat_member"]
+        chat = mc.get("chat") or {}
+        chat_id = str(chat.get("id"))
+        status = (mc.get("new_chat_member") or {}).get("status")
+        if chat.get("type") not in ("group", "supergroup") or chat_id == MAIN_CHAT_ID:
+            return False
+        if status in ("left", "kicked"):
+            return state["subs"].pop(chat_id, None) is not None
+        old = (mc.get("old_chat_member") or {}).get("status")
+        if status in ("member", "administrator") and old in ("left", "kicked", None):
+            send(chat_id, "👋 Привіт! Я надсилатиму в цей чат графіки відключень "
+                          "ДТЕК Одеські електромережі.\nАдміни, оберіть чергу 👇", kb)
+        return False
+
+    # --- натиснули кнопку з чергою
     if "callback_query" in u:
         cq = u["callback_query"]
         msg = cq.get("message") or {}
         chat = msg.get("chat") or {}
         data = cq.get("data") or ""
-        tg("answerCallbackQuery", callback_query_id=cq["id"])
-        if chat.get("type") != "private" or not data.startswith("g:"):
+        chat_id = str(chat.get("id"))
+        if not data.startswith("g:") or not chat:
+            tg("answerCallbackQuery", callback_query_id=cq["id"])
             return False
+        if chat_id == MAIN_CHAT_ID:
+            tg("answerCallbackQuery", callback_query_id=cq["id"], show_alert=True,
+               text=f"У цьому чаті черга {MAIN_GROUP} налаштована на GitHub.")
+            return False
+        if chat.get("type") != "private" and not is_admin(chat_id, cq["from"]["id"]):
+            tg("answerCallbackQuery", callback_query_id=cq["id"], show_alert=True,
+               text="Змінювати чергу в чаті можуть лише адміни.")
+            return False
+        tg("answerCallbackQuery", callback_query_id=cq["id"])
         group = data[2:]
-        chat_id = str(chat["id"])
         others = [c for c in targets(state).get(group, []) if c != chat_id]
         state["subs"][chat_id] = group
         if not others:
             remember_group(state, group, fact)
         tg("editMessageText", chat_id=chat_id, message_id=msg["message_id"],
-           text=f"✅ Ваша черга: <b>{group}</b>\nГрафіки приходитимуть автоматично.",
+           text=f"✅ Черга {chat_word(chat)}: <b>{group}</b>\nГрафіки приходитимуть автоматично.",
            parse_mode="HTML")
         send(chat_id, current_message(group, fact))
         return True
 
+    # --- команди
     m = u.get("message")
-    if not m or (m.get("chat") or {}).get("type") != "private":
+    if not m:
         return False
-    chat_id = str(m["chat"]["id"])
+    chat = m.get("chat") or {}
+    chat_id = str(chat.get("id"))
+    private = chat.get("type") == "private"
     text = (m.get("text") or "").strip()
-    cmd = text.split()[0].split("@")[0].lower() if text else ""
-    sub = state["subs"].get(chat_id)
+    first = text.split()[0] if text else ""
+    cmd, _, target = first.partition("@")
+    cmd = cmd.lower()
+    if not private:
+        # у групі відповідаємо лише на наші команди, адресовані нам
+        if cmd not in OUR_COMMANDS:
+            return False
+        if target and BOT_USERNAME and target.lower() != BOT_USERNAME.lower():
+            return False
+    elif not cmd.startswith("/"):
+        cmd = ""
+
+    is_main = chat_id == MAIN_CHAT_ID
+    sub = MAIN_GROUP if is_main else state["subs"].get(chat_id)
 
     if cmd in ("/start", "/change"):
-        intro = f"Зараз ваша черга: <b>{sub}</b>. " if sub else ""
-        send(chat_id, intro + "Оберіть свою чергу 👇", groups_keyboard(state.get("known_groups")))
+        if is_main:
+            send(chat_id, f"У цьому чаті налаштовано чергу <b>{MAIN_GROUP}</b>. /now — графік зараз.")
+        else:
+            intro = f"Зараз черга {chat_word(chat)}: <b>{sub}</b>. " if sub else ""
+            who = "" if private else " (вибирають адміни)"
+            send(chat_id, intro + f"Оберіть чергу{who} 👇", kb)
     elif cmd == "/now":
         if sub:
             send(chat_id, current_message(sub, fact))
         else:
-            send(chat_id, "Спершу оберіть чергу 👇", groups_keyboard(state.get("known_groups")))
+            send(chat_id, "Спершу оберіть чергу 👇", kb)
     elif cmd == "/stop":
-        if state["subs"].pop(chat_id, None):
-            send(chat_id, "🔕 Ви відписались. Щоб повернутися — /start")
+        if is_main:
+            send(chat_id, "Цей чат налаштовано на GitHub, вимкнути його можна там.")
+        elif not private and not is_admin(chat_id, (m.get("from") or {}).get("id")) \
+                and (m.get("sender_chat") or {}).get("id") != chat.get("id"):
+            send(chat_id, "Відписати чат можуть лише адміни.")
+        elif state["subs"].pop(chat_id, None):
+            send(chat_id, "🔕 Підписку вимкнено. Щоб повернутися — /start")
             return True
-        send(chat_id, "Ви й так не підписані. Щоб підписатися — /start")
+        else:
+            send(chat_id, "Підписки й так немає. Щоб підписатися — /start")
     else:
         send(chat_id, HELP)
     return False
@@ -541,8 +611,10 @@ def handle_failure(state: dict, err: Exception) -> bool:
 
 # ---------------------------------------------------------------- головний цикл
 def main():
+    global BOT_USERNAME
     state = load_state()
     end = time.time() + RUN_MINUTES * 60
+    BOT_USERNAME = (tg("getMe").get("result") or {}).get("username", "")
     tg("setMyCommands", commands=[
         {"command": "start", "description": "Вибрати чергу"},
         {"command": "now", "description": "Графік зараз"},
@@ -572,7 +644,7 @@ def main():
                 next_check = time.time() + CHECK_EVERY
 
             wait = int(max(1, min(25, next_check - time.time(), end - time.time())))
-            params = {"timeout": wait, "allowed_updates": ["message", "callback_query"]}
+            params = {"timeout": wait, "allowed_updates": ["message", "callback_query", "my_chat_member"]}
             if offset is not None:
                 params["offset"] = offset
             res = tg("getUpdates", _timeout=wait + 15, **params)
