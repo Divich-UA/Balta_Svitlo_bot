@@ -377,24 +377,38 @@ def save_state(state: dict):
 
 
 def git_save():
-    """Комітить стан у репозиторій (лише всередині GitHub Actions)."""
+    """Комітить стан у репозиторій (лише всередині GitHub Actions).
+
+    Коміт завжди будується поверх найсвіжішого main, щоб не було конфліктів
+    і щоб наступний запуск бачив актуальний стан.
+    """
     if not os.environ.get("GITHUB_ACTIONS"):
         return
 
     def run(*cmd):
         return subprocess.run(cmd, capture_output=True, text=True)
 
-    run("git", "add", STATE_FILE)
-    run("git", "rm", "--cached", "-q", "--ignore-unmatch", OLD_STATE_FILE)
-    if run("git", "diff", "--cached", "--quiet").returncode == 0:
-        return
-    run("git", "commit", "-q", "-m", "стан бота")
     for _ in range(3):
-        run("git", "pull", "--rebase", "-q")
-        if run("git", "push", "-q").returncode == 0:
+        run("git", "fetch", "-q", "origin", "main")
+        run("git", "reset", "-q", "--mixed", "origin/main")   # файли на диску не чіпає
+        run("git", "add", STATE_FILE)
+        run("git", "rm", "--cached", "-q", "--ignore-unmatch", OLD_STATE_FILE)
+        if run("git", "diff", "--cached", "--quiet").returncode == 0:
+            return
+        run("git", "commit", "-q", "-m", "стан бота")
+        if run("git", "push", "-q", "origin", "HEAD:main").returncode == 0:
             return
         time.sleep(3)
     log("Не вдалося запушити стан")
+
+
+def git_refresh_state():
+    """На старті підтягує найсвіжіший state.enc з main (на випадок старого checkout)."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    subprocess.run(["git", "fetch", "-q", "origin", "main"], capture_output=True)
+    subprocess.run(["git", "checkout", "-q", "origin/main", "--", STATE_FILE],
+                   capture_output=True)
 
 
 # ---------------------------------------------------------------- логіка розсилки
@@ -612,6 +626,7 @@ def handle_failure(state: dict, err: Exception) -> bool:
 # ---------------------------------------------------------------- головний цикл
 def main():
     global BOT_USERNAME
+    git_refresh_state()
     state = load_state()
     end = time.time() + RUN_MINUTES * 60
     BOT_USERNAME = (tg("getMe").get("result") or {}).get("username", "")
