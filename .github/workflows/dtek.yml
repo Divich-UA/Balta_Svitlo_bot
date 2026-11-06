@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main   # завжди найсвіжіший стан, а не той, що був при постановці в чергу
 
       - uses: actions/setup-python@v5
         with:
