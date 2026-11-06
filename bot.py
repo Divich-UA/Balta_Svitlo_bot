@@ -294,7 +294,7 @@ def quiet_now() -> bool:
     return QUIET_FROM <= h < QUIET_TO
 
 
-def tg(method: str, timeout: int = 30, **params) -> dict:
+def tg(method: str, _timeout: int = 30, **params) -> dict:
     if not TG_TOKEN:
         return {"ok": False, "description": "no token"}
     req = urllib.request.Request(
@@ -303,7 +303,7 @@ def tg(method: str, timeout: int = 30, **params) -> dict:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=_timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         try:
@@ -575,7 +575,7 @@ def main():
             params = {"timeout": wait, "allowed_updates": ["message", "callback_query"]}
             if offset is not None:
                 params["offset"] = offset
-            res = tg("getUpdates", timeout=wait + 15, **params)
+            res = tg("getUpdates", _timeout=wait + 15, **params)
             if not res.get("ok"):
                 time.sleep(wait)
             for u in res.get("result", []):
@@ -590,7 +590,7 @@ def main():
                 git_save()
     finally:
         if offset is not None:
-            tg("getUpdates", offset=offset, timeout=0)  # підтвердити оброблене
+            tg("getUpdates", _timeout=15, offset=offset, timeout=0)  # підтвердити оброблене
         save_state(state)
         git_save()
         if fetcher:
